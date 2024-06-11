@@ -1,1 +1,66 @@
+name: Deploy Cloudformation
+on:
+  push:
+    branches:
+      - main
 
+permissions: read-all
+jobs:
+  Cloudformation-deploy:
+    name: Deploy Cloudformaiton
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: cfn-lint-action
+        uses: ScottBrenner/cfn-lint-action@v2.2.9
+
+      - name: Print the cloudformation linter version and run linter
+        run: |
+            cfn-lint --version
+            cfn-lint -t ./template.yml
+      - name: Set env role arn and s3 bucket
+        env:
+          DEPLOYMENT_ROLE_ARN : ${{vars.DEPLOYMENT_ROLE_ARN}}
+          S3_BUCKET : ${{S3_BUCKET}}
+          REGION : ${{REGION}}
+
+      - name: Configure credentials from AWS account using OIDC integration
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{env.DEPLOYMENT_ROLE_ARN}}
+          aws-region: ${{env.REGION}}
+
+      - name: Setup Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.11"
+
+      - name: Setup AWS SAM
+        uses: aws-actions/setup-sam@v2
+
+      - name: Run AWS SAM Build
+        uses: sam build --use-container --template-file template.yml
+
+      - name: SAM package
+        run: sam package --template-file .aws-sam/build/template.yaml --s3-bucket ${{env.S3_BUCKET}} --output-template-file template.yml
+
+      - name: Upload cloudformation template to s3
+        run: |
+          aws s3 cp ./template.yml s3://${{env.S3_BUCKET}}/${{github.event.repository.name}}/template.yml
+
+      - name: Deploy to AWS Cloudformation
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: pipeline-${{github.event.repository.name}}
+          template: https://s3.amazonaws.com/${{env.S3_BUCKET}}/${{github.event.repository.name}}/template.yml
+          parameter-overrides: file://${{github.workspace}}/params.json
+          changeset: --change-set-name
+          capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+  
